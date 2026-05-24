@@ -6,69 +6,23 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
-	"sync/atomic"
 
-	"github.com/brianerandall/chripy/internal/database"
+	"github.com/brianerandall/chirpy/dtos"
+	"github.com/brianerandall/chirpy/internal/database"
+	"github.com/brianerandall/chirpy/middleware"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
-type apiConfig struct {
-	fileserverHits atomic.Int32
-	dbQueries      *database.Queries
-}
-
-type response struct {
-	Valid        bool   `json:"valid,omitempty"`
-	Cleaned_Body string `json:"cleaned_body,omitempty"`
-}
-
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileserverHits.Add(1)
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (cfg *apiConfig) middlewareMetricReset(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileserverHits.Store(0)
-		next.ServeHTTP(w, r)
-	})
-}
-
-func respondWithError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	w.Write([]byte(fmt.Sprintf("{\"error\":\"%s\"}", msg)))
-}
-
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func validateChirp(chirp string) string {
-	// For simplicity, we'll just check for the presence of "badword" and replace it with "****"
-	badWords := []string{"kerfuffle", "sharbert", "fornax"}
-	cleanedWords := strings.Split(chirp, " ")
-
-	for _, badWord := range badWords {
-		for i, word := range cleanedWords {
-			if strings.EqualFold(word, badWord) {
-				cleanedWords[i] = "****"
-			}
-		}
-	}
-
-	return strings.Join(cleanedWords, " ")
-}
-
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
+
+	if platform == "" {
+		platform = "dev"
+	}
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -83,12 +37,13 @@ func main() {
 		Handler: serveMux,
 	}
 
-	apiCfg := &apiConfig{}
-	apiCfg.dbQueries = dbQueries
+	apiCfg := &middleware.ApiConfig{}
+	apiCfg.DbQueries = dbQueries
+	apiCfg.Platform = platform
 
 	fs := http.FileServer(http.Dir("."))
 
-	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", fs)))
+	serveMux.Handle("/app/", apiCfg.MiddlewareMetricsInc(http.StripPrefix("/app", fs)))
 	serveMux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -104,36 +59,94 @@ func main() {
     			<h1>Welcome, Chirpy Admin</h1>
     			<p>Chirpy has been visited %d times!</p>
   			</body>
-		</html>`, apiCfg.fileserverHits.Load())))
+		</html>`, apiCfg.FileserverHits.Load())))
+	})
+
+	serveMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		type request struct {
+			Email string `json:"email"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		req := request{}
+		err := decoder.Decode(&req)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
+			return
+		}
+
+		user, err := apiCfg.DbQueries.CreateUser(r.Context(), req.Email)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to create user")
+			return
+		}
+
+		middleware.RespondWithJSON(w, http.StatusCreated, dtos.User{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		})
+	})
+
+	serveMux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		type request struct {
+			Body   string    `json:"body"`
+			UserId uuid.UUID `json:"user_id"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		req := request{}
+		err := decoder.Decode(&req)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
+			return
+		}
+
+		if len(req.Body) > 140 {
+			middleware.RespondWithError(w, http.StatusBadRequest, "Chirp is too long")
+			return
+		}
+
+		cleanedBody := middleware.ValidateChirp(req.Body)
+
+		qurtyParams := database.CreateChirpParams{
+			Body:   cleanedBody,
+			UserID: req.UserId,
+		}
+
+		chirp, err := apiCfg.DbQueries.CreateChirp(r.Context(), qurtyParams)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to create chirp")
+			return
+		}
+
+		middleware.RespondWithJSON(w, http.StatusCreated, dtos.Chirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
 	})
 
 	serveMux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		apiCfg.fileserverHits.Store(0)
-		w.WriteHeader(http.StatusOK)
-	})
 
-	serveMux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
-		type returnVals struct {
-			Body string `json:"body"`
+		if apiCfg.Platform != "dev" {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Forbidden"))
+			return
 		}
 
-		decoder := json.NewDecoder(r.Body)
-		retVal := returnVals{}
-		err := decoder.Decode(&retVal)
+		err := apiCfg.DbQueries.DeleteUsers(r.Context())
 		if err != nil {
-			respondWithError(w, http.StatusOK, "Something went wrong")
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to reset users")
 			return
 		}
 
-		if len(retVal.Body) > 140 {
-			respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-			return
-		}
-
-		cleanedBody := validateChirp(retVal.Body)
-
-		respondWithJSON(w, http.StatusOK, response{Cleaned_Body: cleanedBody})
+		apiCfg.FileserverHits.Store(0)
+		w.WriteHeader(http.StatusOK)
 	})
 
 	server.ListenAndServe()

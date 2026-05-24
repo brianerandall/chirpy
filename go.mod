@@ -1,4 +1,4 @@
-module github.com/brianerandall/chripy
+module github.com/brianerandall/chirpy
 
 go 1.26.2
 
