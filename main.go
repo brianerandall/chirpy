@@ -1,15 +1,22 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/brianerandall/chripy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 type response struct {
@@ -60,6 +67,16 @@ func validateChirp(chirp string) string {
 }
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		panic(err)
+	}
+
+	dbQueries := database.New(db)
+
 	serveMux := http.NewServeMux()
 	server := &http.Server{
 		Addr:    ":8080",
@@ -67,6 +84,7 @@ func main() {
 	}
 
 	apiCfg := &apiConfig{}
+	apiCfg.dbQueries = dbQueries
 
 	fs := http.FileServer(http.Dir("."))
 
