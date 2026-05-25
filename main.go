@@ -149,5 +149,51 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	serveMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		chirps, err := apiCfg.DbQueries.GetAllChirps(r.Context())
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
+			return
+		}
+
+		var chirpDtos []dtos.Chirp
+		for _, chirp := range chirps {
+			chirpDtos = append(chirpDtos, dtos.Chirp{
+				ID:        chirp.ID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
+				UserID:    chirp.UserID,
+			})
+		}
+
+		middleware.RespondWithJSON(w, http.StatusOK, chirpDtos)
+	})
+
+	serveMux.HandleFunc("GET /api/chirps/{chirpId}", func(w http.ResponseWriter, r *http.Request) {
+		chirpIdStr := r.URL.Path[len("/api/chirps/"):]
+		chirpId, err := uuid.Parse(chirpIdStr)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+			return
+		}
+
+		chirp, err := apiCfg.DbQueries.GetChirpByID(r.Context(), chirpId)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+
+		middleware.RespondWithJSON(w, http.StatusOK, dtos.Chirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
+	})
+
+	fmt.Println("Server is running on port 8080...")
+
 	server.ListenAndServe()
 }
