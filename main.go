@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/brianerandall/chirpy/dtos"
+	"github.com/brianerandall/chirpy/internal/auth"
 	"github.com/brianerandall/chirpy/internal/database"
 	"github.com/brianerandall/chirpy/middleware"
 	"github.com/google/uuid"
@@ -64,7 +65,8 @@ func main() {
 
 	serveMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type request struct {
-			Email string `json:"email"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -75,7 +77,18 @@ func main() {
 			return
 		}
 
-		user, err := apiCfg.DbQueries.CreateUser(r.Context(), req.Email)
+		hashedPassword, err := auth.HashPassword(req.Password)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to hash password")
+			return
+		}
+
+		dbParams := database.CreateUserParams{
+			Email:          req.Email,
+			HashedPassword: hashedPassword,
+		}
+
+		user, err := apiCfg.DbQueries.CreateUser(r.Context(), dbParams)
 		if err != nil {
 			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to create user")
 			return
@@ -190,6 +203,40 @@ func main() {
 			UpdatedAt: chirp.UpdatedAt,
 			Body:      chirp.Body,
 			UserID:    chirp.UserID,
+		})
+	})
+
+	serveMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		type request struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		req := request{}
+		err := decoder.Decode(&req)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
+			return
+		}
+
+		user, err := apiCfg.DbQueries.GetUserByEmail(r.Context(), req.Email)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid email or password")
+			return
+		}
+
+		match, err := auth.CheckPasswordHash(req.Password, user.HashedPassword)
+		if err != nil || !match {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid email or password")
+			return
+		}
+
+		middleware.RespondWithJSON(w, http.StatusOK, dtos.User{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
 		})
 	})
 
