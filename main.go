@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/brianerandall/chirpy/dtos"
 	"github.com/brianerandall/chirpy/internal/auth"
@@ -20,6 +21,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	jwt_secret := os.Getenv("JWT_SECRET")
 
 	if platform == "" {
 		platform = "dev"
@@ -41,6 +43,7 @@ func main() {
 	apiCfg := &middleware.ApiConfig{}
 	apiCfg.DbQueries = dbQueries
 	apiCfg.Platform = platform
+	apiCfg.TokenSecret = jwt_secret
 
 	fs := http.FileServer(http.Dir("."))
 
@@ -108,6 +111,18 @@ func main() {
 			UserId uuid.UUID `json:"user_id"`
 		}
 
+		token, tokenErr := auth.GetBearerToken(r.Header)
+		if tokenErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
+			return
+		}
+
+		jwtUserId, validateErr := auth.ValidateJWT(token, apiCfg.TokenSecret)
+		if validateErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid token")
+			return
+		}
+
 		decoder := json.NewDecoder(r.Body)
 		req := request{}
 		err := decoder.Decode(&req)
@@ -123,12 +138,13 @@ func main() {
 
 		cleanedBody := middleware.ValidateChirp(req.Body)
 
-		qurtyParams := database.CreateChirpParams{
+		queryParams := database.CreateChirpParams{
 			Body:   cleanedBody,
-			UserID: req.UserId,
+			UserID: jwtUserId,
+			//UserID: req.UserId,
 		}
 
-		chirp, err := apiCfg.DbQueries.CreateChirp(r.Context(), qurtyParams)
+		chirp, err := apiCfg.DbQueries.CreateChirp(r.Context(), queryParams)
 		if err != nil {
 			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to create chirp")
 			return
@@ -208,8 +224,9 @@ func main() {
 
 	serveMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type request struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
+			Email            string `json:"email"`
+			Password         string `json:"password"`
+			ExpiresInSeconds int64  `json:"expires_in_seconds,omitempty"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -218,6 +235,14 @@ func main() {
 		if err != nil {
 			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
 			return
+		}
+
+		if req.ExpiresInSeconds == 0 {
+			req.ExpiresInSeconds = 3600 // Default to 1 hour if not specified
+		}
+
+		if req.ExpiresInSeconds > 3600 {
+			req.ExpiresInSeconds = 3600 // Cap at 1 hour for security
 		}
 
 		user, err := apiCfg.DbQueries.GetUserByEmail(r.Context(), req.Email)
@@ -232,11 +257,18 @@ func main() {
 			return
 		}
 
+		token, err := auth.MakeJWT(user.ID, apiCfg.TokenSecret, time.Duration(req.ExpiresInSeconds)*time.Second)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to generate token")
+			return
+		}
+
 		middleware.RespondWithJSON(w, http.StatusOK, dtos.User{
 			ID:        user.ID,
 			CreatedAt: user.CreatedAt,
 			UpdatedAt: user.UpdatedAt,
 			Email:     user.Email,
+			Token:     token,
 		})
 	})
 
