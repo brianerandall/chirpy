@@ -141,7 +141,6 @@ func main() {
 		queryParams := database.CreateChirpParams{
 			Body:   cleanedBody,
 			UserID: jwtUserId,
-			//UserID: req.UserId,
 		}
 
 		chirp, err := apiCfg.DbQueries.CreateChirp(r.Context(), queryParams)
@@ -224,9 +223,8 @@ func main() {
 
 	serveMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type request struct {
-			Email            string `json:"email"`
-			Password         string `json:"password"`
-			ExpiresInSeconds int64  `json:"expires_in_seconds,omitempty"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 
 		decoder := json.NewDecoder(r.Body)
@@ -235,14 +233,6 @@ func main() {
 		if err != nil {
 			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
 			return
-		}
-
-		if req.ExpiresInSeconds == 0 {
-			req.ExpiresInSeconds = 3600 // Default to 1 hour if not specified
-		}
-
-		if req.ExpiresInSeconds > 3600 {
-			req.ExpiresInSeconds = 3600 // Cap at 1 hour for security
 		}
 
 		user, err := apiCfg.DbQueries.GetUserByEmail(r.Context(), req.Email)
@@ -257,19 +247,92 @@ func main() {
 			return
 		}
 
-		token, err := auth.MakeJWT(user.ID, apiCfg.TokenSecret, time.Duration(req.ExpiresInSeconds)*time.Second)
+		token, err := auth.MakeJWT(user.ID, apiCfg.TokenSecret, time.Duration(3600)*time.Second)
 		if err != nil {
 			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to generate token")
 			return
 		}
 
+		refresh_token, err := auth.MakeRefreshToken()
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to generate refresh token")
+			return
+		}
+
+		queryParams := database.CreateRefreshTokenParams{
+			UserID:    user.ID,
+			Token:     refresh_token,
+			ExpiresAt: time.Now().AddDate(0, 0, 60), // Refresh token valid for 60 days
+		}
+
+		refreshToken, err := apiCfg.DbQueries.CreateRefreshToken(r.Context(), queryParams)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to create refresh token")
+			return
+		}
+
 		middleware.RespondWithJSON(w, http.StatusOK, dtos.User{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
-			Token:     token,
+			ID:           user.ID,
+			CreatedAt:    user.CreatedAt,
+			UpdatedAt:    user.UpdatedAt,
+			Email:        user.Email,
+			Token:        token,
+			RefreshToken: refreshToken.Token,
 		})
+	})
+
+	serveMux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		type request struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+
+		token, tokenErr := auth.GetBearerToken(r.Header)
+		if tokenErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
+			return
+		}
+
+		refreshToken, err := apiCfg.DbQueries.GetRefreshTokenByToken(r.Context(), token)
+		if err != nil || refreshToken.RevokedAt.Valid || refreshToken.ExpiresAt.Before(time.Now()) {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid or expired refresh token")
+			return
+		}
+
+		user, err := apiCfg.DbQueries.GetUserFromRefreshToken(r.Context(), refreshToken.Token)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid refresh token")
+			return
+		}
+
+		newAccessToken, err := auth.MakeJWT(user.ID, apiCfg.TokenSecret, time.Duration(3600)*time.Second)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to generate new token")
+			return
+		}
+
+		middleware.RespondWithJSON(w, http.StatusOK, dtos.RefreshToken{
+			Token: newAccessToken,
+		})
+	})
+
+	serveMux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		type request struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+
+		token, tokenErr := auth.GetBearerToken(r.Header)
+		if tokenErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
+			return
+		}
+
+		revokeErr := apiCfg.DbQueries.RevokeRefreshToken(r.Context(), token)
+		if revokeErr != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to revoke refresh token")
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	fmt.Println("Server is running on port 8080...")
