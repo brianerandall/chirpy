@@ -335,6 +335,71 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	serveMux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
+		type request struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		var req request
+		if err := decoder.Decode(&req); err != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid request payload")
+			return
+		}
+
+		token, tokenErr := auth.GetBearerToken(r.Header)
+		if tokenErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
+			return
+		}
+
+		validated_id, validateErr := auth.ValidateJWT(token, apiCfg.TokenSecret)
+		if validateErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid token")
+			return
+		}
+
+		//user, err := apiCfg.DbQueries.GetUserFromRefreshToken(r.Context(), token)
+		//if err != nil {
+		//	middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid email or password")
+		//	return
+		//}
+
+		user, err := apiCfg.DbQueries.GetUserByID(r.Context(), validated_id)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "User not found")
+			return
+		}
+
+		hashedPassword, err := auth.HashPassword(req.Password)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to hash password")
+			return
+		}
+
+		user.Email = req.Email
+		user.HashedPassword = hashedPassword
+
+		updatedUser, err := apiCfg.DbQueries.UpdateUserEmailAndPassword(r.Context(), database.UpdateUserEmailAndPasswordParams{
+			ID:             user.ID,
+			Email:          user.Email,
+			HashedPassword: user.HashedPassword,
+		})
+
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to update user")
+			return
+		}
+
+		middleware.RespondWithJSON(w, http.StatusOK, dtos.User{
+			ID:        updatedUser.ID,
+			CreatedAt: updatedUser.CreatedAt,
+			UpdatedAt: updatedUser.UpdatedAt,
+			Email:     updatedUser.Email,
+		})
+	})
+
 	fmt.Println("Server is running on port 8080...")
 
 	server.ListenAndServe()
