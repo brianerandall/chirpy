@@ -360,12 +360,6 @@ func main() {
 			return
 		}
 
-		//user, err := apiCfg.DbQueries.GetUserFromRefreshToken(r.Context(), token)
-		//if err != nil {
-		//	middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid email or password")
-		//	return
-		//}
-
 		user, err := apiCfg.DbQueries.GetUserByID(r.Context(), validated_id)
 		if err != nil {
 			middleware.RespondWithError(w, http.StatusUnauthorized, "User not found")
@@ -398,6 +392,46 @@ func main() {
 			UpdatedAt: updatedUser.UpdatedAt,
 			Email:     updatedUser.Email,
 		})
+	})
+
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpId}", func(w http.ResponseWriter, r *http.Request) {
+		chirpIdStr := r.URL.Path[len("/api/chirps/"):]
+		chirpId, err := uuid.Parse(chirpIdStr)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+			return
+		}
+
+		token, tokenErr := auth.GetBearerToken(r.Header)
+		if tokenErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
+			return
+		}
+
+		jwtUserId, validateErr := auth.ValidateJWT(token, apiCfg.TokenSecret)
+		if validateErr != nil {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Invalid token")
+			return
+		}
+
+		chirp, err := apiCfg.DbQueries.GetChirpByID(r.Context(), chirpId)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+
+		if chirp.UserID != jwtUserId {
+			middleware.RespondWithError(w, http.StatusForbidden, "You can only delete your own chirps")
+			return
+		}
+
+		err = apiCfg.DbQueries.DeleteChirp(r.Context(), chirpId)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to delete chirp")
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	fmt.Println("Server is running on port 8080...")
