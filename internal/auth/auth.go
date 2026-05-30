@@ -92,3 +92,20 @@ func MakeRefreshToken() (string, error) {
 
 	return hex.EncodeToString(randomData), nil
 }
+
+func GetAPIKey(headers http.Header) (string, error) {
+	apiKey := headers.Get("Authorization")
+	if apiKey == "" {
+		return "", errors.New("API key missing")
+	}
+
+	parts := strings.SplitN(apiKey, " ", 2)
+
+	if len(parts) == 2 && strings.ToLower(parts[0]) == "apikey" {
+		return strings.TrimSpace(parts[1]), nil
+	} else if len(parts) == 1 {
+		return strings.TrimSpace(parts[0]), nil
+	} else {
+		return "", errors.New("Invalid API key format")
+	}
+}

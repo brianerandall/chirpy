@@ -89,6 +89,7 @@ func main() {
 		dbParams := database.CreateUserParams{
 			Email:          req.Email,
 			HashedPassword: hashedPassword,
+			IsChirpyRed:    false,
 		}
 
 		user, err := apiCfg.DbQueries.CreateUser(r.Context(), dbParams)
@@ -98,10 +99,11 @@ func main() {
 		}
 
 		middleware.RespondWithJSON(w, http.StatusCreated, dtos.User{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
+			ID:          user.ID,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: user.IsChirpyRed,
 		})
 	})
 
@@ -278,6 +280,7 @@ func main() {
 			Email:        user.Email,
 			Token:        token,
 			RefreshToken: refreshToken.Token,
+			IsChirpyRed:  user.IsChirpyRed,
 		})
 	})
 
@@ -387,10 +390,11 @@ func main() {
 		}
 
 		middleware.RespondWithJSON(w, http.StatusOK, dtos.User{
-			ID:        updatedUser.ID,
-			CreatedAt: updatedUser.CreatedAt,
-			UpdatedAt: updatedUser.UpdatedAt,
-			Email:     updatedUser.Email,
+			ID:          updatedUser.ID,
+			CreatedAt:   updatedUser.CreatedAt,
+			UpdatedAt:   updatedUser.UpdatedAt,
+			Email:       updatedUser.Email,
+			IsChirpyRed: updatedUser.IsChirpyRed,
 		})
 	})
 
@@ -432,6 +436,44 @@ func main() {
 		}
 
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	serveMux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		type data struct {
+			UserId uuid.UUID `json:"user_id"`
+		}
+
+		type request struct {
+			Event string `json:"event"`
+			Data  data   `json:"data"`
+		}
+
+		apiKey, apiKeyErr := auth.GetAPIKey(r.Header)
+		if apiKeyErr != nil || apiKey != os.Getenv("POLKA_KEY") {
+			middleware.RespondWithError(w, http.StatusUnauthorized, "Missing or invalid API key")
+			return
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		req := request{}
+		err := decoder.Decode(&req)
+		if err != nil {
+			middleware.RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
+			return
+		}
+
+		if req.Event == "user.upgraded" {
+			_, err := apiCfg.DbQueries.UpdateUserToChirpyRed(r.Context(), req.Data.UserId)
+			if err != nil {
+				middleware.RespondWithJSON(w, http.StatusNotFound, "Failed to update users to Chirpy Red")
+				return
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		} else {
+			w.WriteHeader(http.StatusNoContent)
+		}
 	})
 
 	fmt.Println("Server is running on port 8080...")

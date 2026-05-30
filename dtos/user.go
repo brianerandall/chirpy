@@ -14,4 +14,5 @@ type User struct {
 	Token        string    `json:"token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	RevokedAt    time.Time `json:"revoked_at,omitempty"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
