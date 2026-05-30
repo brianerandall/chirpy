@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/brianerandall/chirpy/dtos"
@@ -180,24 +181,79 @@ func main() {
 	})
 
 	serveMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		chirps, err := apiCfg.DbQueries.GetAllChirps(r.Context())
-		if err != nil {
-			middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
-			return
+
+		queryParams := r.URL.Query()
+
+		sort_order := queryParams.Get("sort")
+		if sort_order == "" {
+			sort_order = "asc"
 		}
 
-		var chirpDtos []dtos.Chirp
-		for _, chirp := range chirps {
-			chirpDtos = append(chirpDtos, dtos.Chirp{
-				ID:        chirp.ID,
-				CreatedAt: chirp.CreatedAt,
-				UpdatedAt: chirp.UpdatedAt,
-				Body:      chirp.Body,
-				UserID:    chirp.UserID,
-			})
-		}
+		if queryParams.Get("author_id") != "" {
+			authorId, err := uuid.Parse(queryParams.Get("author_id"))
+			if err != nil {
+				middleware.RespondWithError(w, http.StatusBadRequest, "Invalid author_id")
+				return
+			}
 
-		middleware.RespondWithJSON(w, http.StatusOK, chirpDtos)
+			chirps, err := apiCfg.DbQueries.GetChirpsByUserID(r.Context(), authorId)
+			if err != nil {
+				middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
+				return
+			}
+
+			if sort_order == "desc" {
+				sort.Slice(chirps, func(i, j int) bool {
+					return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+				})
+			} else {
+				sort.Slice(chirps, func(i, j int) bool {
+					return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+				})
+			}
+
+			var chirpDtos []dtos.Chirp
+			for _, chirp := range chirps {
+				chirpDtos = append(chirpDtos, dtos.Chirp{
+					ID:        chirp.ID,
+					CreatedAt: chirp.CreatedAt,
+					UpdatedAt: chirp.UpdatedAt,
+					Body:      chirp.Body,
+					UserID:    chirp.UserID,
+				})
+			}
+
+			middleware.RespondWithJSON(w, http.StatusOK, chirpDtos)
+		} else {
+			chirps, err := apiCfg.DbQueries.GetAllChirps(r.Context())
+			if err != nil {
+				middleware.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
+				return
+			}
+
+			if sort_order == "desc" {
+				sort.Slice(chirps, func(i, j int) bool {
+					return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+				})
+			} else {
+				sort.Slice(chirps, func(i, j int) bool {
+					return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+				})
+			}
+
+			var chirpDtos []dtos.Chirp
+			for _, chirp := range chirps {
+				chirpDtos = append(chirpDtos, dtos.Chirp{
+					ID:        chirp.ID,
+					CreatedAt: chirp.CreatedAt,
+					UpdatedAt: chirp.UpdatedAt,
+					Body:      chirp.Body,
+					UserID:    chirp.UserID,
+				})
+			}
+
+			middleware.RespondWithJSON(w, http.StatusOK, chirpDtos)
+		}
 	})
 
 	serveMux.HandleFunc("GET /api/chirps/{chirpId}", func(w http.ResponseWriter, r *http.Request) {
